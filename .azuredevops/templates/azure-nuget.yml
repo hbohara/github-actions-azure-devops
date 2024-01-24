@@ -1,0 +1,68 @@
+name: Github Actions - Pull Nuget Pacakges from Azure Artifacts
+
+on:
+    workflow_dispatch:
+      
+jobs:
+    build:
+        runs-on: wex-sandbox
+        env:
+            artifactFeedUri: https://pkgs.dev.azure.com/WEXHealthTech/_packaging/WexHealth.PublicSources%40Approved/nuget/v3/index.json
+            artifactFeedUriv2: https://pkgs.dev.azure.com/WEXHealthTech/_packaging/WexHealth.PublicSources%40Approved/nuget/v2
+
+        steps:
+        - uses: actions/checkout@v2
+
+        - name: Setup .NET Core 
+          uses: actions/setup-dotnet@v1
+          with:
+            dotnet-version: '3.1'
+
+        - name: Azure PowerShell Script
+          uses: azure/powershell@v1
+          with:
+            inlineScript: |
+              Write-Host "Hello there!"
+
+              # Borrowed from Phil Jenkins's Azure CRS Migration Project:
+              https://dev.azure.com/WEXHealthTech/Health/_git/benefits-crs-ssrs?path=/.azuredevops/crs-ssrs-migrate-server.yml
+
+              # Connect to Azure Artifact Feed using PAT Token
+              try {
+                #https://learn.microsoft.com/en-us/azure/devops/artifacts/tutorials/private-powershell-library?  view=azure-devops#connect-to-feed-as-a-powershell-repository
+                $patToken = "$(artifactFeedPAT)" | ConvertTo-SecureString -AsPlainText -Force
+                $credsAzureDevopsServices = New-Object System.Management.Automation.PSCredential("Github Actions Azure DevOps PAT", $patToken)
+                Register-PSRepository -Name "WexHealth.PublicSources" -SourceLocation "$(artifactFeedUriv2)" -InstallationPolicy Trusted   -Credential $credsAzureDevopsServices
+                Register-PackageSource -Name "WexHealth.PublicSources" -Location "$(artifactFeedUriv2)" -ProviderName NuGet -Trusted   -SkipValidate -Credential $credsAzureDevopsServices
+                  
+                write-host "installing Az.KeyVault"
+                Install-Module -Name Az.KeyVault -Scope CurrentUser -Repository "WexHealth.PublicSources" -Force -Credential $credsAzureDevopsServices
+
+                write-host "importing Az.KeyVault"
+                Import-Module Az.KeyVault
+
+                Connect-AzAccount
+              }
+              catch {
+                  write-host "##[error] error during setup: $($_.Exception.Message)"
+              }
+            azPSVersion: 'latest'
+            azureSubscription: {{ secrets.vaultSubscription}} # In Azure this would be sth like ${{parameters.vaultSubscription}}
+            artifactFeedPAT: {{ secrets.artifactFeedPAT}} # In Azure Pipelines, we usually store this as a pipeline secret variable 
+
+
+        - name: Setup NuGet Credentials
+          run: |
+            $patToken = "$(artifactFeedPAT)" | ConvertTo-SecureString -AsPlainText -Force
+            $artifactFeedUri = "$(artifactFeedUri)"
+            dotnet new nugetconfig 
+            dotnet nuget and source --name AzureArtifacts --source $artifactFeedUri --username "github" --password $patToken --store-password-in-clear-text
+            dotnet restore
+          with:
+            artifactFeedUri: ${{ env.artifactFeedUri }}
+            artifactFeedPAT: ${{ secrets.artifactFeedPAT}} 
+
+        - name: Build and Test
+          run: |
+            dotnet build 
+            dotnet test 
